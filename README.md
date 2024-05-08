@@ -1,2 +1,3 @@
 # 2024 lightning Talk 
-Dude
+## Sanitized files in thecode
+## Powerpoint in presentation
