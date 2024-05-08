@@ -1,0 +1,181 @@
+################################################################
+# This role will create a task for someone whom you either like or not
+# read the readme.md
+################################################################
+
+################################################
+- name: Search for user
+  ansible.builtin.uri:
+    url: "https://{{ snow_instance }}.service-now.com/api/now/table/sys_user?name={{ task_assignment_user|urlencode }}"
+    method: GET
+    user: "{{ Uname }}"
+    password: "{{ Upass }}"
+    headers:
+      Accept: application/json
+      Content-Type: application/json
+    body_format: json
+    status_code:
+      - 200
+      - 201
+  register: snow_user_results
+
+- name: Search for group
+  ansible.builtin.uri:
+    url: "https://{{ snow_instance }}.service-now.com/api/now/table/sys_user_group?name={{ task_assignment_group|urlencode }}"
+    method: GET
+    user: "{{ Uname }}"
+    password: "{{ Upass }}"
+    headers:
+      Accept: application/json
+      Content-Type: application/json
+    body_format: json
+    status_code:
+      - 200
+      - 201
+  register: snow_group_results
+
+- name: show group sysid
+  ansible.builtin.debug:
+    msg:
+      - "{{ snow_group_results.json.result[0].name }} {{ snow_group_results.json.result[0].sys_id }}"
+      - "{{ snow_user_results.json.result[0].name }} {{ snow_user_results.json.result[0].sys_id }}"
+    verbosity: 1
+
+- name: Search for group from user
+  ansible.builtin.uri:
+    url: "https://{{ snow_instance }}.service-now.com/api/now/table/sys_user_group?name={{ snow_user_results.json.result[0].u_department|urlencode }}"
+    method: GET
+    user: "{{ Uname }}"
+    password: "{{ Upass }}"
+    headers:
+      Accept: application/json
+      Content-Type: application/json
+    body_format: json
+    status_code:
+      - 200
+      - 201
+  register: snow_group_results_from_user
+  when:
+    - 'task_assignment_group is not defined or snow_group_results | length == 0'
+    - 'snow_user_results | length > 0'
+
+- name: snow_group_results_from_user to snow_group_results
+  set_fact:
+    snow_group_results: "{{ snow_group_results_from_user }}"
+  when:
+    - 'task_assignment_group is not defined or snow_group_results.json | length == 0'
+    - 'snow_user_results.json | length > 0'
+
+- name: show task_assignment_group
+  ansible.builtin.debug:
+    msg:
+      - "{{ task_assignment_group }}"
+    verbosity: 1
+
+- name: Search for cmdb_ci
+  ansible.builtin.uri:
+    url: "https://{{ snow_instance }}.service-now.com/api/now/table/cmdb_ci_business_app?name={{ task_cmdb_ci|urlencode }}"
+    method: GET
+    user: "{{ Uname }}"
+    password: "{{ Upass }}"
+    headers:
+      Accept: application/json
+      Content-Type: application/json
+    body_format: json
+    status_code:
+      - 200
+      - 201
+  register: snow_cmdb_ci_results
+
+- name: show cmdb results
+  ansible.builtin.debug:
+    msg:
+      - "{{ snow_cmdb_ci_results.json.result[0] }}"
+    verbosity: 1
+
+- name: fail block
+  when: 'snow_group_results.json | length == 0  or snow_user_results.json | length == 0 or snow_cmdb_ci_results.json | length == 0'
+  block:
+    - name: fail check with user
+      ansible.builtin.debug:
+        msg:
+          - "-------------------------------------"
+          - "| check your vars for a misspelling |"
+          - "| any var with size of 0 is no good |"
+          - "-------------------------------------"
+          - "| task_assignment_group {{ snow_group_results.json |length}}           |"
+          - "| task_assignment_user  {{ snow_user_results.json | length }}           |"
+          - "| task_cmdb_ci          {{ snow_cmdb_ci_results.json | length }}           |"
+          - "-------------------------------------"
+    - name: endit
+      meta: end_play
+
+- name: wtf
+  ansible.builtin.debug:
+    msg:
+      - "{{ snow_group_results.json.result[0].sys_id }}"
+    verbosity: 1
+
+- name: show facts
+  ansible.builtin.debug:
+    msg:
+      - 'assignedto: "{{ snow_user_results.json.result[0].sys_id }}"'
+      - 'assignedgroup: "{{ snow_group_results.json.result[0].sys_id }}"'
+      - 'cmdbci: "{{ snow_cmdb_ci_results.json.result[0].sys_id }}"'
+    verbosity: 1
+
+# - meta: end_play
+- name: set key facts based searches
+  ansible.builtin.set_fact:
+    assignedto: "{{ snow_user_results.json.result[0].sys_id }}"
+    cmdbci: "{{ snow_cmdb_ci_results.json.result[0].sys_id }}"
+    assignedgroup: "{{ snow_group_results.json.result[0].sys_id }}"
+
+- name: show more facts of assignedto etc
+  ansible.builtin.debug:
+    msg:
+      - "assignedto {{ assignedto }}"
+      - "assignedgroup {{ assignedgroup }}"
+      - "cmdbci {{ cmdbci }}"
+    verbosity: 1
+
+- name: Create Task
+  ansible.builtin.uri:
+    url: "https://{{ snow_instance }}.service-now.com/api/now/table/sc_task"
+    method: POST
+    body_format: json
+    headers:
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body:
+      active: "true"
+      assigned_to: "{{ assignedto }}"
+      u_ci_class: "{{ task_ci_class }}"
+      assignment_group: "{{ assignedgroup }}"
+      cmdb_ci: "{{ cmdbci }}"
+      description: "{{ task_description }}"
+      short_description: "{{ task_short_name }}"
+      priority: "{{ task_priority }}"
+      work_notes: "{{ task_work_notes }}"
+      Approval: "approved"
+    url_password: "{{ Upass }}"
+    url_username: "{{ Uname }}"
+    status_code: 201
+    validate_certs: false
+  register: create_task
+
+- name: show create
+  ansible.builtin.debug:
+    msg:
+      - "{{ create_task }}"
+    verbosity: 1
+
+- name: results
+  ansible.builtin.debug:
+    msg:
+      - "-----------------------------"
+      - " task {{ create_task.json.result.task_effective_number }} created "
+      - "-----------------------------"
+      - " detailed json results can be "
+      - " found in create_task.json "
+      - "-----------------------------"

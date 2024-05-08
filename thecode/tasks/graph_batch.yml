@@ -1,0 +1,77 @@
+- name: show batch
+  debug:
+    msg:
+      - "{{ item }}"
+    verbosity: "{{ verbosity_level }}"
+
+- name: Get Graph API Application Token
+  ansible.builtin.uri:
+    url: "https://login.microsoftonline.com/{{ tenantId }}/oauth2/v2.0/token"
+    method: POST
+    headers:
+      Content-Type: "application/x-www-form-urlencoded"
+    body_format: form-urlencoded
+    body:
+      grant_type: "client_credentials"
+      client_id: "{{ app_teamsid }}"
+      client_secret: "{{ app_teamssecret }}"
+      scope: "https://graph.microsoft.com/.default"
+  register: tokena
+
+- name: set token fact
+  ansible.builtin.set_fact:
+    token: "{{ tokena.json.access_token }}"
+###############################################
+- name: "Mark messages read"
+  ansible.builtin.uri:
+    url: "{{ url_patch }}"
+    method: PATCH
+    headers:
+      Authorization: 'Bearer {{ token }}'
+      Content-Type: application/json
+    body_format: json
+    body:
+      isRead: true
+    status_code:
+      - 200
+      - 201
+      - 404
+      - 400
+  vars:
+    url_patch: "https://graph.microsoft.com/v1.0/users/{{ mailaccount }}/messages/{{ item_z }}"
+  ignore_errors: true                     ###################################
+  until: message_patch is not failed      # This is for unstable API's      #
+  retries: 20                             #                                 #
+  delay: 60                               ###################################
+  loop: "{{ item }}"
+  loop_control:
+    extended: true
+    loop_var: item_z
+  register: message_patch
+###############################################
+- name: "Move message to Archive "
+  ansible.builtin.uri:
+    url: "{{ url_move }}"
+    method: POST
+    headers:
+      Authorization: 'Bearer {{ token }}'
+      Content-Type: application/json
+    body_format: json
+    body:
+      destinationId: "{{ (root_folders | json_query(destfolder))[0] }}"
+    status_code:
+      - 200
+      - 201
+      - 404
+      - 400
+  vars:
+    url_move: "https://graph.microsoft.com/v1.0/users/{{ mailaccount }}/messages/{{ item_z }}/move"
+    destfolder: "json.value[?displayName==`Archive`].id"
+  register: message_move
+  ignore_errors: true                    ###################################
+  until: message_move is not failed      # This is for unstable API's      #
+  retries: 20                            #                                 #
+  delay: 60                              ###################################
+  loop: "{{ item }}"
+  loop_control:
+    loop_var: item_z

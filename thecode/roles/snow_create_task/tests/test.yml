@@ -1,0 +1,41 @@
+---
+###############################################################
+# Getting snow vars out
+################################################################
+- hosts: localhost
+  gather_facts: no
+
+################################################################
+# Load our Vaults
+################################################################
+  vars_files:
+    - /vault/your_most_incredible_vault_file_dude.yml
+################################################################
+# Set vars for playbook
+################################################################
+  vars:
+################################################################
+# Main section of playbook
+################################################################
+  tasks:
+    - name: include role snow_create_task windows
+      include_role:
+        name: ../snow_create_task          # if testing locally
+        public: true
+      vars:
+        snow_instance: "sandbox"                       # uncomment this for test and commment out above
+        task_description: "Ansible test"
+        task_short_name: "test task"
+        task_ci_class: "Ansible"
+        task_assignment_group: "Engineering"
+        task_assignment_user: "The Dude"                    # comment out of you want the group
+        task_cmdb_ci: "Ansible"
+        task_work_notes: "Getter Done"
+        task_priority: "4" #1 = high 3 moderate 4 low
+        # task_work_notes: "Ansible [code]{{ testusers |regex_replace(sqq,'<br>')|regex_replace(sq,'')|regex_replace('\\[','<br>') |regex_replace('\\]','<br>')}}[/code]"
+
+
+    - name: show results
+      ansible.builtin.debug:
+        msg:
+          - '{{ create_task.json.result.number }}'

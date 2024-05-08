@@ -1,0 +1,368 @@
+---
+- name: Compromised Accounts
+  hosts: localhost #local_jump
+  gather_facts: yes
+  vars:
+    mailaccount: "serviceaccount@somewhere.com"
+    subject_search: "CrowdStrike Identity Protection Policy Notification"
+    user_list_verified: []
+    user_list_notvalid: []
+    psfile: []
+    email_list: []
+    disable_enabled: False
+    email_addresses: []
+    email_addresses_notfound: []
+    email_addresses_outofscope: []
+    force_password_reset_cmdx: ""
+    force_infox: ""
+    force_password_reset_cmd: ""
+    force_info: ""
+    force_reset: false
+    servicenow: "servicedev"
+    verbosity_level: 0
+    nolog: true
+    sq: "'"
+    sqq: "', '"
+    dq: "''"
+
+  vars_files:
+    - '/vault/a_great_vault.yml'
+
+  tasks:
+  - name: Get Graph API Application Token
+    ansible.builtin.uri:
+      url: "https://login.microsoftonline.com/{{ tenantId }}/oauth2/v2.0/token"
+      method: POST
+      headers:
+        Content-Type: "application/x-www-form-urlencoded"
+      body_format: form-urlencoded
+      body:
+        grant_type: "client_credentials"
+        client_id: "{{ app_teamsid }}"
+        client_secret: "{{ app_teamssecret }}"
+        scope: "https://graph.microsoft.com/.default"
+    register: tokena
+
+  - name: set token fact
+    ansible.builtin.set_fact:
+      token: "{{ tokena.json.access_token }}"
+
+  - name: show token
+    ansible.builtin.debug:
+      msg:
+        - "{{ token }}"
+      verbosity: "{{ verbosity_level }}"
+
+  - name: "Get root folder of email "
+    ansible.builtin.uri:
+      url: "https://graph.microsoft.com/v1.0/users/{{ mailaccount }}/mailFolders"
+      method: GET
+      headers:
+        Authorization: 'Bearer {{ token }}'
+        Content-Type: application/json
+      # body_format: json
+      status_code:
+        - 200
+        - 201
+        - 404
+    register: root_folders
+
+  - name: show results of root folders
+    ansible.builtin.debug:
+      msg:
+        - "{{ root_folders }}"
+      verbosity: "{{ verbosity_level }}"
+
+  - name: show results
+    ansible.builtin.debug:
+      msg:
+        - "{{ root_folders | json_query(query) }}"
+      verbosity: "{{ verbosity_level }}"
+    vars:
+      query: "json.value[?displayName==`Inbox`].id"
+
+  - name: set fact for root folder
+    ansible.builtin.set_fact:
+      inbox: "{{ (root_folders | json_query(query))[0] }}"
+    vars:
+      query: "json.value[?displayName==`Inbox`].id"
+
+  - name: "Get Inbox email"
+    ansible.builtin.uri:
+      url: "{{ url_search }}"
+      method: GET
+      headers:
+        Authorization: 'Bearer {{ token }}'
+        Content-Type: application/json
+      status_code:
+        - 200
+        - 201
+        - 404
+        - 400
+    vars:
+      url_search: "https://graph.microsoft.com/v1.0/users/{{ mailaccount }}/mailFolders/{{ inbox }}/messages?\\$filter=startswith(Subject,'{{ subject_search|urlencode }}')&$top=2000"
+    register: messages
+
+  - name: show results of get inbox
+    debug:
+      msg:
+        - "{{ messages }}"
+        - "{{ ( messages|json_query('json.value[*]') )|length }}"
+      verbosity: "{{ verbosity_level }}"
+
+  - name: no messages end block
+    when: '(( messages|json_query(qcont) )|length|int) == 0'
+    block:
+      - name: No messages
+        ansible.builtin.debug:
+          msg:
+            - "+-------------------------+"
+            - "| No subject emails found |"
+            - "+-------------------------+"
+
+      - name: Stopping playbook
+        meta: end_play
+
+  - name: show email results
+    ansible.builtin.debug:
+      msg:
+        - "{{ messages | json_query(query) | regex_replace('<[^>]+>', '') }}"
+      verbosity: 0
+    vars:
+      query: "json.value[*].body.content"
+
+  - name: set fact for data
+    ansible.builtin.set_fact:
+      mbody: "{{ messages | json_query(query) | regex_replace('<[^>]+>', '') | regex_replace('\\\\u2002','')}}"
+    vars:
+      query: "json.value[*].body.content"
+
+  - name: Strip HTML and create JSON
+    set_fact:
+      email_json:
+        user: "{{ mbody | regex_replace('.*User:&nbsp; (.*?)Source.*', '\\1') | trim }}"
+
+  - name: Strip HTML and create emails list
+    set_fact:
+      email_list: "{{ email_list +  [(item | regex_replace('.*User:&nbsp; (.*?)Source.*', '\\1')) | regex_replace('\\r\\n\\r\\n\\r\\n')| trim] }}"
+      email_tmp: []
+    loop: "{{ mbody }}"
+    no_log: "{{ nolog }}"
+
+  # - debug: var=email_list
+
+  - name: Strip html 2nd pass
+    when: '"BannerEnd" in item'
+    set_fact:
+      email_tmp: "{{ email_tmp +  [ (item.split('BannerEnd')).1|regex_replace('\\r\\n') ] }}"
+    loop: "{{ email_list }}"
+    no_log: "{{ nolog }}"
+
+  - name: Strip html 3rd pass
+    when: '"BannerEnd" not in item'
+    set_fact:
+      email_tmp: "{{ email_tmp +  [ item ] }}"
+    loop: "{{ email_list }}"
+    no_log: "{{ nolog }}"
+
+  - name: swap names
+    ansible.builtin.set_fact:
+      email_list: "{{ email_tmp }}"
+
+  - name: show email_list
+    debug:
+      msg:
+        - "{{ email_list }}"
+      verbosity: "{{ verbosity_level }}"
+
+  - name: set fact to emails id
+    ansible.builtin.set_fact:
+      email_id: "{{ messages | json_query(queryid) }}"
+    vars:
+      query: "json.value[*].body.content"
+      queryid: "json.value[*].id"
+
+  - name: show email_id
+    debug:
+      msg:
+        - "{{ email_id }}"
+
+  - name: set fact to email list batch
+    set_fact:
+      email_id_batch: "{{ email_id |batch(100) }}"
+
+
+  ###############################################
+  - name: Add Windows Jump Box
+    ansible.builtin.add_host:
+      hostname: "ansible_windows"
+      ansible_host: "ansible_windows"
+      ansible_port: "5986"
+      ansible_connection: winrm
+      ansible_winrm_transport: kerberos #TODO put kerberos back sometimes I need to use NTLM when testing
+      ansible_password: "{{ Upass }}"
+      ansible_user: "{{ Uname }}@YOURCOMPANY_AD_SERVER" # Needed for new ansapp004p server
+      ansible_winrm_server_cert_validation: ignore
+      ansible_winrm_scheme: https
+      ansible_winrm_message_encryption: auto
+      ansible_winrm_send_cbt: no
+      ansible_winrm_kerberos_delegation: true
+      ansible_become_method: runas
+      ansible_become_user: '{{Uname|lower}}@yourcompany_ad_server'
+      ansible_become_password: '{{Upass}}'
+    changed_when: false
+
+
+
+  - name: total email_list and unique
+    ansible.builtin.debug:
+      msg:
+      - "---------------------"
+      - "{{ email_list| sort  }}"
+      - "---------------------"
+      - "{{ email_list| sort | unique }}"
+      - "---------------------"
+
+  - name: total email_list and unique count
+    ansible.builtin.debug:
+      msg:
+      - "---------------------"
+      - "Total  {{ email_list| sort | length |int }}"
+      - "Unique {{ email_list| sort |unique | length |int }}"
+      - "---------------------"
+
+  - name: are we forcing a reset of password
+    when: force_reset
+    ansible.builtin.set_fact:
+      force_password_reset_cmd: 'Set-Aduser -Identity $user.SamAccountName -ChangePasswordAtLogon $true'
+      force_password_reset_cmdx: 'Set-Aduser -Identity $user[0].SamAccountName -ChangePasswordAtLogon $true;Set-Aduser -Identity $user[0].SamAccountName -ChangePasswordAtLogon $true'
+      force_info: 'Set-ADUser -Identity $user.SamAccountName -Replace @{info="End user’s password is on a list of passwords (word lists) known to be compromised. Security Forced Reset {{ ansible_date_time.date }}"}'
+      force_infox: 'Set-ADUser -Identity $user[0].SamAccountName -Replace @{info="End user’s password is on a list of passwords (word lists) known to be compromised. Security Forced Reset {{ ansible_date_time.date }}"};Set-ADUser -Identity $user[1].SamAccountName -Replace @{info="End user’s password is on a list of passwords (word lists) known to be compromised. Security Forced Reset {{ ansible_date_time.date }}"}'
+
+  - name: save displaynames to a text file
+    ansible.windows.win_copy:
+      content: "{{ email_list|unique | join('\n')  }}"
+      dest: 'e:\displaynames_compromised_accounts.txt'
+    delegate_to: "ansible_windows"
+
+  - name: |
+      ***
+      Get employee email from displayname
+      If match set -ChangePasswordAtLogon
+      Also set info on account
+    ansible.windows.win_shell: | #using shell b/c groups are too large for the module
+      $password =  ConvertTo-SecureString -String '{{ Upass }}'  -AsPlainText -Force
+      $cred = New-Object System.Management.Automation.PSCredential '{{ Uname }}',$password
+
+      #$timestamp = (Get-Date).AddDays(-1)
+
+      Get-Content -Path 'e:\displaynames_compromised_accounts.txt' | ForEach-Object {
+        $displayName = $_
+        $user = get-aduser -Filter "DisplayName -eq '$displayName'" -Properties EmailAddress, PasswordLastSet -Credential $cred -WarningAction:SilentlyContinue -ErrorAction:SilentlyContinue
+
+        if ($user.EmailAddress.length -eq 0 ) {
+          write-host "$displayName not found"
+        }
+        else {
+          if ($user.EmailAddress -like "*soandso.com*") {
+            if ($user.count -gt 1 ) {
+              write-host $user[0].EmailAddress
+              {{ force_password_reset_cmdx }}
+              {{ force_infox }}
+            } else {
+              write-host $user.EmailAddress
+              {{ force_password_reset_cmd }}
+              {{ force_info }}
+            }
+          }
+          else {
+            write-host $user.EmailAddress out of scope or password changed at $user.PasswordLastSet
+          }
+        }
+      }
+
+    changed_when: false
+    ignore_errors: true
+    register: verify_employee
+    delegate_to: "ansible_windows"
+
+  - name: show results of powershell run
+    ansbile.builtin.debug: var=verify_employee.stdout
+
+  - name: set fact for email that exist
+    ansible.builtin.set_fact:
+      email_addresses: "{{ email_addresses + [ item ] }}"
+    when: '"not found" not in item or "out of scope" not in item'
+    loop: "{{  verify_employee.stdout_lines |regex_replace('\\\\n')  }}"
+
+  # - debug: var=email_addresses
+
+  - name: set fact for email that dont exist
+    ansible.builtin.set_fact:
+      email_addresses_notfound: "{{ email_addresses_notfound + [ item ] }}"
+    when: '"not found" in item'
+    loop: "{{ ( verify_employee.stdout_lines |regex_replace('\\\\n')) }}"
+
+  - name: set fact for email that are out of scope
+    ansible.builtin.set_fact:
+      email_addresses_outofscope: "{{ email_addresses_outofscope + [ item ] }}"
+    when: '"out of scope" in item'
+    loop: "{{ ( verify_employee.stdout_lines |regex_replace('\\\\n')) }}"
+
+  - name: The list of email addresses to process in future loop
+    ansible.builtin.debug:
+      msg:
+        - "{{ item }}"
+      verbosity: "{{ verbosity_level }}"
+    loop: "{{ email_addresses }}"
+
+  - name: The list of email addresses to process in future loop
+    ansible.builtin.debug:
+      msg:
+        - "{{ email_addresses }}"
+        - "{{ email_addresses |length | int }}"
+        - "---------------------"
+        - "{{ email_addresses_notfound }}"
+        - "{{ email_addresses_notfound |length | int }}"
+      verbosity: "{{ verbosity_level }}"
+
+  - name: send emails to users that they are screwed
+    ansible.builtin.include_tasks:
+      tasks/send_emails.yml
+
+  - name: Create Task for Security for accounts not found in AD
+    when: '(email_addresses_notfound |length | int ) > 0'
+    include_role:
+      name: snow_create_task                   # if using automation hub
+      public: true
+    vars:
+      snow_instance: "{{ servicenow }}"                         # uncomment this for test and commment out above
+      task_short_name: "CS compromised accounts not found"      # short description
+      task_description: "Crowdstrike compromised accounts users not found: [code]{{ email_addresses_notfound  |regex_replace(sqq,'<br>')|regex_replace(sq,'')|regex_replace('\\[','<br>') |regex_replace('\\]','<br>')  }}[/code]" # long description
+      task_assignment_group: "TS Information Security"          # assignment group if empty then gotten from user below
+      task_cmdb_ci: "Crowdstrike"                               # ci aka SERVER
+      task_ci_class: "Business Application"                     # can be Server just take a look at snow drop down
+      task_work_notes: "[code]{{ email_addresses_notfound  |regex_replace(sqq,'<br>')|regex_replace(sq,'')|regex_replace('\\[','<br>') |regex_replace('\\]','<br>')  }}[/code]"
+      task_priority: "4" #1 = high 3 moderate 4 low
+
+###################################################
+# Mark messages as read and move to arhive folder
+###############################################
+  - name: include graph batch
+    include_tasks:
+      tasks/graph_batch.yml
+    loop: "{{ email_id_batch }}"
+
+  - name: show out of scope fyi
+    ansible.builtin.debug:
+      msg:
+        - "{{ email_addresses_outofscope }}"
+
+###############################################
+  - name: All Done
+    ansible.builtin.debug:
+      msg:
+        - "----------"
+        - "|  Done  |"
+        - "----------"
+

@@ -1,0 +1,22 @@
+- name: load body of email
+  ansible.builtin.set_fact:
+    body: "{{lookup('file', 'template/body.html') }}" # you need your own html I had to sanitize this
+
+
+- name: Email results
+  mail:
+    host: smtpout.soandso.com
+    port: 25
+    from: "ansible@soandso.com"
+    to: "{{ item }}"
+    subject: "Password Reset"
+    subtype: html
+    body: |
+      {{ body }}
+    secure: try
+  when: '"out of scope" not in item'
+  register: send_email
+  ignore_errors: true
+  run_once: true
+  delegate_to: localhost
+  loop: "{{ email_addresses }}"

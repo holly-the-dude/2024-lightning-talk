@@ -1,0 +1,16 @@
+################################################################
+# This role will create a task for someone whom you either like or not
+# read the readme.md
+################################################################
+
+################################################
+- name: process task with user
+  ansible.builtin.include_tasks:
+    user_group.yml
+  when: task_assignment_user is defined
+
+- name: process task without user
+  ansible.builtin.include_tasks:
+    group_only.yml
+  when: task_assignment_user is not defined
+
